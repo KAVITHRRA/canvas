@@ -1,16 +1,24 @@
 import React, { useLayoutEffect, useEffect, useState } from "react";
 import "./App.css";
 import rough from "roughjs/bundled/rough.esm";
-
+import getStroke from "perfect-freehand";
 const generator = rough.generator();
 
-function createElement(id, x1, y1, x2, y2, type) {
-  const roughElement =
-    type === "line"
-      ? generator.line(x1, y1, x2, y2)
-      : generator.rectangle(x1, y1, x2 - x1, y2 - y1);
-  return { id, x1, y1, x2, y2, type, roughElement };
-}
+const createElement = (id, x1, y1, x2, y2, type) => {
+  switch (type) {
+    case "line":
+    case "rectangle":
+      const roughElement =
+        type === "line"
+          ? generator.line(x1, y1, x2, y2)
+          : generator.rectangle(x1, y1, x2 - x1, y2 - y1);
+      return { id, x1, y1, x2, y2, type, roughElement };
+    case "pencil":
+      return { id, type, points: [{ x: x1, y: y1 }] };
+    default:
+      throw new Error(`Type not recognised: ${type}`);
+  }
+};
 
 const nearPoint = (x, y, x1, y1, name) => {
   return Math.abs(x - x1) < 5 && Math.abs(y - y1) < 5 ? name : null;
@@ -123,10 +131,42 @@ const useHistory = (initialState) => {
   return [history[index], setState, undo, redo];
 };
 
+const getSvgPathFromStroke = (stroke) => {
+  if (!stroke.length) return "";
+
+  const d = stroke.reduce((acc, [x0, y0], i, arr) => {
+    if (i === 0) {
+      return `M ${x0},${y0}`;
+    } else {
+      const [x1, y1] = arr[i - 1];
+      return `${acc} L ${x0},${y0}`;
+    }
+  }, "");
+
+  return `${d} Z`;
+};
+
+const drawElement = (roughCanvas, context, element) => {
+  switch (element.type) {
+    case "line":
+    case "rectangle":
+      roughCanvas.draw(element.roughElement);
+      break;
+    case "pencil":
+      const stroke = getSvgPathFromStroke(getStroke(element.points));
+      context.fill(new Path2D(stroke));
+      break;
+    default:
+      throw new Error(`Type not recognised ${element.type}`);
+  }
+};
+
+const adjustmentRequired = (type) => ["line", "rectangle"].includes(type);
+
 const App = () => {
   const [elements, setElements, undo, redo] = useHistory([]);
   const [action, setAction] = useState("none");
-  const [tool, setTool] = useState("line");
+  const [tool, setTool] = useState("pencil");
   const [selectedElement, setSelectedElement] = useState(null);
 
   useLayoutEffect(() => {
@@ -136,7 +176,7 @@ const App = () => {
 
     const roughCanvas = rough.canvas(canvas);
 
-    elements.forEach(({ roughElement }) => roughCanvas.draw(roughElement));
+    elements.forEach((element) => drawElement(roughCanvas, context, element));
   }, [elements]);
 
   useEffect(() => {
@@ -157,10 +197,21 @@ const App = () => {
   }, [undo, redo]);
 
   const updateElement = (id, x1, y1, x2, y2, type) => {
-    const updatedElement = createElement(id, x1, y1, x2, y2, type);
-
     const elementsCopy = [...elements];
-    elementsCopy[id] = updatedElement;
+    switch (type) {
+      case "line":
+      case "rectangle":
+        elementsCopy[id] = createElement(id, x1, y1, x2, y2, type);
+        break;
+      case "pencil":
+        elementsCopy[id].points = [
+          ...elementsCopy[id].points,
+          { x: x2, y: y2 },
+        ];
+        break;
+      default:
+        throw new Error(`Type not recognised; ${type}`);
+    }
     setElements(elementsCopy, true);
   };
 
@@ -234,9 +285,11 @@ const App = () => {
     if (selectedElement) {
       const index = selectedElement.id;
       const { id, type } = elements[index];
-      if (action === "drawing" || action === "resizing") {
+      if (
+        (action === "drawing" || action === "resizing") &&
+        adjustmentRequired(type)
+      ) {
         const { x1, y1, x2, y2 } = adjustElementCoordinates(elements[index]);
-        updateElement(id, x1, y1, x2, y2, tool);
         updateElement(id, x1, y1, x2, y2, type);
       }
       setAction("none");
@@ -268,6 +321,13 @@ const App = () => {
           onChange={() => setTool("rectangle")}
         />
         <label htmlFor="rectangle">Rectangle</label>
+        <input
+          type="radio"
+          id="pencil"
+          checked={tool === "pencil"}
+          onChange={() => setTool("pencil")}
+        />
+        <label htmlFor="pencil">Pencil</label>
       </div>
       <div style={{ position: "fixed", bottom: 0, padding: 10 }}>
         <button onClick={undo}>Undo</button>
